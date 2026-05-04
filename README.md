@@ -19,13 +19,13 @@ workspace/
 The `quotecraft` repository should be cloned from the original shared source:
 
 ```powershell
-git clone https://github.com/alexg-axa/quotecraft-review-agent
+git clone https://github.com/cloudofficer/quotecraft.git
 ```
 
 Clone this repository next to it:
 
 ```powershell
-git clone <this-repository-url>
+git clone https://github.com/alexg-axa/quotecraft-review-agent
 ```
 
 The review agent expects the application repository at `..\quotecraft` by
