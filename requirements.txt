@@ -3,4 +3,5 @@ langchain-openai
 python-dotenv
 pypdf
 pyyaml
+reportlab
 rich

@@ -44,13 +44,23 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Fill in `.env` with your Azure model details and confirm the QuoteCraft path:
+Fill in `.env` with your Azure model details and confirm the QuoteCraft path.
+For Azure AI Foundry `/openai/v1` endpoints, use:
 
 ```env
-AZURE_OPENAI_ENDPOINT=
 AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_DEPLOYMENT=
-AZURE_OPENAI_API_VERSION=2024-02-15-preview
+AZURE_OPENAI_BASE_URL=https://<your-foundry-resource>.services.ai.azure.com/openai/v1
+AZURE_OPENAI_MODEL=<your-deployment-name>
+QUOTECRAFT_REPO_PATH=..\quotecraft
+```
+
+For classic Azure OpenAI resource endpoints, use these instead:
+
+```env
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=<your-deployment-name>
+AZURE_OPENAI_API_VERSION=2024-10-21
 QUOTECRAFT_REPO_PATH=..\quotecraft
 ```
 
@@ -60,4 +70,10 @@ QUOTECRAFT_REPO_PATH=..\quotecraft
 python main.py
 ```
 
-The command prints a Markdown architecture-review report to the terminal.
+The command prints a Markdown architecture-review report to the terminal and
+saves two files:
+
+```text
+outputs/review-report.md
+outputs/review-report.pdf
+```
