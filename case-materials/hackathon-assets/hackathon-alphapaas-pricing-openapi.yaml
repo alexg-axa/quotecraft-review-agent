@@ -1,0 +1,295 @@
+openapi: 3.0.3
+info:
+  title: AlphaPaaS Pricing API
+  description: |
+    Internal pricing service operated by the AlphaPaaS Cloud Broker.
+
+    Returns indicative monthly cost estimates for cloud resources in euros.
+    Used for cost attribution, budget tracking, and architecture review cost
+    analysis. Rates are updated quarterly and reflect blended AlphaInsure
+    contracted pricing across AWS and Azure.
+
+    **This service is not authoritative for billing.** Use it for sizing and
+    planning. The authoritative source is the monthly FinOps cost report.
+  version: 1.0.0
+
+servers:
+  - url: https://tzs87pdj75.execute-api.eu-central-1.amazonaws.com/prod
+    description: Production
+
+tags:
+  - name: rates
+    description: Unit rate card
+  - name: pricing
+    description: Cost estimation
+  - name: health
+    description: Health check
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Liveness check
+      description: Returns 200 if the service is healthy.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /rates:
+    get:
+      tags: [rates]
+      summary: Get the current unit rate card
+      description: |
+        Returns the current per-unit rates for the cloud, region, and service
+        type requested. Rates are in euros.
+
+        If no filter is supplied, returns the full rate card.
+      parameters:
+        - in: query
+          name: cloud
+          description: Filter by cloud provider.
+          schema:
+            type: string
+            enum: [aws, azure]
+        - in: query
+          name: region
+          description: Filter by region (e.g., `eu-central-1`, `westeurope`).
+          schema:
+            type: string
+        - in: query
+          name: service_type
+          description: Filter by service type.
+          schema:
+            type: string
+            enum: [compute, database, cache, object_storage, file_storage, log]
+      responses:
+        '200':
+          description: Rate card
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateCard'
+
+  /price:
+    post:
+      tags: [pricing]
+      summary: Estimate monthly cost for a resource specification
+      description: |
+        Takes a resource specification and returns an indicative monthly cost
+        estimate in euros, with a breakdown by dimension (compute, memory,
+        storage).
+
+        The estimate assumes the resource runs for `hours_per_month` in the
+        given month. For a permanently-on resource in a 30-day month use
+        `hours_per_month = 720`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PriceRequest'
+            examples:
+              production_postgres:
+                summary: Production PostgreSQL instance (16 vCPU, 64 GB, 512 GB storage)
+                value:
+                  cloud: azure
+                  region: westeurope
+                  service_type: database
+                  cpu_cores: 16
+                  ram_gb: 64
+                  storage_gb: 512
+                  hours_per_month: 720
+              application_pod:
+                summary: A single OpenShift pod, modest sizing
+                value:
+                  cloud: aws
+                  region: eu-central-1
+                  service_type: compute
+                  cpu_cores: 1
+                  ram_gb: 1
+                  storage_gb: 0
+                  hours_per_month: 720
+      responses:
+        '200':
+          description: Cost estimate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    UnitRates:
+      type: object
+      description: Per-unit rates in euros.
+      properties:
+        vcpu_hour_eur:
+          type: number
+          format: float
+          description: Euros per vCPU-hour.
+          example: 0.0410
+        ram_gb_hour_eur:
+          type: number
+          format: float
+          description: Euros per GB-RAM-hour.
+          example: 0.0055
+        storage_gb_month_eur:
+          type: number
+          format: float
+          description: Euros per GB of storage per month.
+          example: 0.115
+        request_million_eur:
+          type: number
+          format: float
+          nullable: true
+          description: |
+            Euros per million requests (applicable to serverless / object
+            storage). Null for services where requests are not priced
+            separately.
+
+    RateCardEntry:
+      type: object
+      properties:
+        cloud:
+          type: string
+          enum: [aws, azure]
+        region:
+          type: string
+          example: eu-central-1
+        service_type:
+          type: string
+          enum: [compute, database, cache, object_storage, file_storage, log]
+        rates:
+          $ref: '#/components/schemas/UnitRates'
+        effective_date:
+          type: string
+          format: date
+          description: The date from which this rate card is effective.
+          example: "2026-04-01"
+
+    RateCard:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateCardEntry'
+        last_updated:
+          type: string
+          format: date-time
+          description: When the rate card was last refreshed.
+
+    PriceRequest:
+      type: object
+      required: [cloud, service_type, cpu_cores, ram_gb, storage_gb, hours_per_month]
+      properties:
+        cloud:
+          type: string
+          enum: [aws, azure]
+          description: Cloud provider.
+        region:
+          type: string
+          description: Region. If omitted, defaults to the primary EU region for the cloud.
+          default: eu-central-1
+        service_type:
+          type: string
+          enum: [compute, database, cache, object_storage, file_storage, log]
+          description: |
+            Type of service. Determines which rates are applied.
+            `compute` — OpenShift pods, Lambda, Functions.
+            `database` — RDS, Azure PostgreSQL.
+            `cache` — ElastiCache, Azure Cache for Redis.
+            `object_storage` — S3, Azure Blob.
+            `file_storage` — EFS, Azure Files.
+            `log` — CloudWatch Logs, Log Analytics.
+        cpu_cores:
+          type: number
+          format: float
+          minimum: 0
+          description: Number of vCPUs. Use fractional values for sub-core allocations.
+        ram_gb:
+          type: number
+          format: float
+          minimum: 0
+          description: RAM in gigabytes.
+        storage_gb:
+          type: number
+          format: float
+          minimum: 0
+          description: Storage in gigabytes.
+        hours_per_month:
+          type: integer
+          minimum: 0
+          maximum: 744
+          default: 720
+          description: Hours the resource is running in the month. 720 for always-on.
+        requests_per_month:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Optional. Number of requests (only applicable to object_storage and
+            log service types, where requests are priced separately from
+            storage).
+
+    PriceBreakdown:
+      type: object
+      properties:
+        compute_eur:
+          type: number
+          format: float
+          description: Cost contribution from vCPU-hours.
+        memory_eur:
+          type: number
+          format: float
+          description: Cost contribution from GB-RAM-hours.
+        storage_eur:
+          type: number
+          format: float
+          description: Cost contribution from storage-GB-months.
+        requests_eur:
+          type: number
+          format: float
+          description: Cost contribution from requests (if applicable).
+
+    PriceResponse:
+      type: object
+      properties:
+        monthly_eur:
+          type: number
+          format: float
+          description: Total monthly cost estimate in euros.
+          example: 843.55
+        breakdown:
+          $ref: '#/components/schemas/PriceBreakdown'
+        rates_applied:
+          $ref: '#/components/schemas/UnitRates'
+        assumptions:
+          type: array
+          items:
+            type: string
+          description: |
+            Human-readable assumptions applied to the calculation, e.g.
+            "Rate card effective 2026-04-01", "Default region eu-central-1 used".
+        disclaimer:
+          type: string
+          example: Indicative estimate only. Authoritative billing is via the FinOps monthly report.
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Invalid cloud 'gcp' — must be one of: aws, azure"

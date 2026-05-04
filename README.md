@@ -6,6 +6,35 @@ The first version reads evidence from the neighboring QuoteCraft repository,
 asks an Azure OpenAI / Azure Foundry model to review it, and prints a Markdown
 findings report.
 
+## Repository Layout
+
+Clone the application repository and this review-agent repository side by side:
+
+```text
+workspace/
+  quotecraft/                 # application under review
+  quotecraft-review-agent/    # this agent project
+```
+
+The `quotecraft` repository should be cloned from the original shared source:
+
+```powershell
+git clone https://github.com/cloudofficer/quotecraft.git
+```
+
+Clone this repository next to it:
+
+```powershell
+git clone <this-repository-url>
+```
+
+The review agent expects the application repository at `..\quotecraft` by
+default. If your local folders are different, update `QUOTECRAFT_REPO_PATH` in
+your `.env` file.
+
+Shared hackathon notes and assets that are not part of the original
+QuoteCraft repository should live in `case-materials/`.
+
 ## Setup
 
 ```powershell
@@ -15,7 +44,15 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Fill in `.env` with your Azure model details.
+Fill in `.env` with your Azure model details and confirm the QuoteCraft path:
+
+```env
+AZURE_OPENAI_ENDPOINT=
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_DEPLOYMENT=
+AZURE_OPENAI_API_VERSION=2024-02-15-preview
+QUOTECRAFT_REPO_PATH=..\quotecraft
+```
 
 ## Run
 
@@ -23,4 +60,4 @@ Fill in `.env` with your Azure model details.
 python main.py
 ```
 
-By default the agent expects the QuoteCraft repository at `..\quotecraft`.
+The command prints a Markdown architecture-review report to the terminal.
