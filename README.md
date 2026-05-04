@@ -19,7 +19,7 @@ workspace/
 The `quotecraft` repository should be cloned from the original shared source:
 
 ```powershell
-git clone https://github.com/cloudofficer/quotecraft.git
+git clone https://github.com/alexg-axa/quotecraft-review-agent
 ```
 
 Clone this repository next to it:
