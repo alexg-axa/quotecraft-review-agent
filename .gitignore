@@ -203,6 +203,10 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Internal meeting notes and generated outputs
+*_transcript.md
+outputs/
+
 # Ruff stuff:
 .ruff_cache/
 

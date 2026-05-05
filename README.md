@@ -32,8 +32,9 @@ The review agent expects the application repository at `..\quotecraft` by
 default. If your local folders are different, update `QUOTECRAFT_REPO_PATH` in
 your `.env` file.
 
-Shared hackathon notes and assets that are not part of the original
-QuoteCraft repository should live in `case-materials/`.
+Shared hackathon assets that are safe for the team repository should live in
+`case-materials/`. Do not commit proprietary meeting transcripts, personal
+notes, credentials, generated reports, or other internal-only material.
 
 ## Setup
 
