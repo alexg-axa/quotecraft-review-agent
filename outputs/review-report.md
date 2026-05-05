@@ -2,11 +2,11 @@
 
 ## Executive Summary
 
-- QuoteCraft is a Silver-tier internal microservice handling Restricted data (PII + Financial), deployed on AlphaPaaS (AWS) with Azure-managed Postgres and AWS-managed Redis/EFS.
-- Multiple critical gaps exist in security (secrets, network policies, encryption), availability (single-AZ resources, missing DR), and cost (oversized non-prod, provisioned EFS).
-- Several policy breaches are tracked as backlog tickets but remain unresolved, including public DB access, plaintext Redis, and improper RBAC.
-- Scalability is limited by in-memory rate limiting and lack of DB connection pooling, risking performance at forecasted peak loads.
-- Immediate remediation is required for secrets handling, network exposure, and resource sizing to meet AlphaPaaS standards.
+- QuoteCraft is a Silver-tier, internal microservice handling Restricted (PII + Financial) data, deployed on AlphaPaaS (AWS) with Azure-managed Postgres and AWS-managed Redis/EFS/S3.
+- Multiple critical security and availability gaps exist, including improper secrets handling, lack of multi-AZ and encrypted Redis, and public network exposure for Postgres.
+- Cost controls are breached in non-production environments and EFS throughput provisioning, violating FinOps standards.
+- Scalability is limited by in-memory rate limiting and single-replica worker deployments, risking service degradation under forecasted load.
+- Remediation actions are urgent and actionable, with several tracked in backlog tickets but not yet scheduled.
 
 ## Findings
 
@@ -19,90 +19,83 @@
   - Source: case:hackathon-assets/hackathon-quotecraft-intake-form.pdf
   - Quote: "The FinOps team flagged in March 2026 that QuoteCraft's non-production environment is consuming approximately 35% of what production consumes."
 - Policy reference: FIN-07
-- Why it matters: Exceeding 20% spend triggers a FinOps review and risks budget approval.
-- Remediation: Investigate non-prod resource sizing and scheduling; reduce footprint to ≤20% of production.
+- Why it matters: Exceeding the 20% threshold triggers a FinOps review and risks budget overruns.
+- Remediation: Investigate non-production resource sizing and scheduling; reduce spend to ≤20% of production.
 - Confidence: High
 
-#### F-02: Provisioned EFS throughput not justified
+#### F-02: EFS provisioned throughput waste
 - Severity: High
 - Dimension: Cost
 - Evidence:
   - Source: app:infra/aws/efs.tf
   - Quote: "Provisioned throughput. Originally set during the pilot when we thought PDF generation would be I/O bound. It isn't. Tracked in QC-211."
 - Policy reference: FIN-06
-- Why it matters: Unjustified provisioned throughput increases monthly storage costs.
-- Remediation: Switch EFS to standard throughput unless a documented IOPS requirement exists.
+- Why it matters: Unnecessary provisioned throughput increases monthly storage costs.
+- Remediation: Downgrade EFS to standard throughput unless documented IOPS requirement exists.
 - Confidence: High
 
-#### F-03: S3 archive lacks lifecycle policy for cold storage
+#### F-03: S3 archive lacks lifecycle policy
 - Severity: Medium
 - Dimension: Cost
 - Evidence:
   - Source: app:infra/aws/s3.tf
   - Quote: "# NB: No lifecycle configuration. Quote archives are kept in STANDARD storage class indefinitely. There was a ticket to add glacier transition (QC-134) but it was deprioritised."
 - Policy reference: FIN-13
-- Why it matters: Keeping archives in standard storage increases long-term costs.
+- Why it matters: Long-term retention in standard storage increases unnecessary costs.
 - Remediation: Implement S3 lifecycle policy to transition archives to Glacier after 30 days.
 - Confidence: High
 
-#### F-04: Oversized Azure Postgres instance in non-prod
-- Severity: Medium
+#### F-04: Overprovisioned Postgres instance
+- Severity: Low
 - Dimension: Cost
 - Evidence:
   - Source: app:docs/capacity-plan.md
-  - Quote: "Azure PostgreSQL Flexible Server ... SKU: GP_Standard_D16s_v3 (16 vCPU, 64 GB RAM) ... Non-production environment is consuming approximately 35% of what production consumes."
-- Policy reference: FIN-09
-- Why it matters: Non-prod DB should be ≤50% of production size and paused on weekends.
-- Remediation: Downsize non-prod Postgres and implement weekend pausing.
+  - Quote: "Azure PostgreSQL Flexible Server ... SKU: GP_Standard_D16s_v3 (16 vCPU, 64 GB RAM) ... More recent telemetry suggests this has drifted upward; we have not yet re-baselined."
+- Policy reference: FIN-04
+- Why it matters: Oversized database increases monthly spend; right-sizing based on actual utilization is required.
+- Remediation: Re-baseline Postgres utilization and downsize if average CPU <30%.
 - Confidence: Medium
 
 ### Security
 
-#### F-05: Redis cache not encrypted in transit
+#### F-05: Redis not encrypted in transit
 - Severity: Critical
 - Dimension: Security
 - Evidence:
   - Source: app:infra/aws/elasticache.tf
   - Quote: "transit_encryption_enabled = false ... NB: TLS in transit is not enabled. Enabling it would require an application change (rediss:// URL and CA bundle). Tracked in QC-176."
 - Policy reference: ASC-03, ASC-05, DCH-04
-- Why it matters: Unencrypted cache exposes Restricted data (PII) to interception risk.
+- Why it matters: Unencrypted Redis traffic exposes Restricted data (PII) to interception risk.
 - Remediation: Enable TLS for ElastiCache and update application to use rediss://.
 - Confidence: High
 
-#### F-06: Azure Postgres accessible via public internet
+#### F-06: Postgres accessed via public FQDN and public network
 - Severity: Critical
 - Dimension: Security
 - Evidence:
+  - Source: app:deploy/openshift/configmap.yaml
+  - Quote: "using the standard FQDN. Private Endpoint is provisioned ... DNS record is pending ... Until then we use the public FQDN, which Azure routes over the public internet."
   - Source: app:infra/azure/postgres.tf
-  - Quote: "public_network_access_enabled = true ... There is a ticket to lock this down (QC-193) but it has not been scheduled."
-- Policy reference: ASC-03, DCH-04
-- Why it matters: Public access exposes Restricted data to external threats and breaches private connectivity requirements.
-- Remediation: Disable public access and enforce Private Endpoint for all DB traffic.
+  - Quote: "public_network_access_enabled = true"
+- Policy reference: ASC-03, DCH-04, AHS-15, AHS-16
+- Why it matters: Restricted data traverses public networks, violating private connectivity and encryption requirements.
+- Remediation: Complete DNS setup for Private Endpoint and disable public network access.
 - Confidence: High
 
-#### F-07: RBAC Role grants wildcard permissions
-- Severity: Critical
-- Dimension: Security
-- Evidence:
-  - Source: app:deploy/openshift/rbac.yaml
-  - Quote: "apiGroups: [\"*\"] ... resources: [\"*\"] ... verbs: [\"*\"] ... this Role was copied from an earlier internal tool and never tightened."
-- Policy reference: CKS-14
-- Why it matters: Wildcard RBAC permissions violate least privilege and CIS benchmarks, risking privilege escalation.
-- Remediation: Restrict Role to only required resources and verbs.
-- Confidence: High
-
-#### F-08: Long-lived AWS access keys used for EFS and Secrets Manager
+#### F-07: Secrets handled via long-lived IAM keys and environment variables
 - Severity: High
 - Dimension: Security
 - Evidence:
   - Source: app:deploy/openshift/secret-aws-keys.yaml
-  - Quote: "# Long-lived IAM user access keys ... There's a ticket to migrate to IRSA (QC-203) but it's not scheduled yet."
-- Policy reference: ASC-06, CKS-10
-- Why it matters: Long-lived credentials increase risk of compromise; workload identity federation is required.
-- Remediation: Migrate to IRSA or equivalent workload identity for AWS access.
+  - Quote: "Long-lived IAM user access keys for reading from AWS Secrets Manager and mounting EFS. Created by the initial platform onboarding. There's a ticket to migrate to IRSA (QC-203) but it's not scheduled yet."
+  - Source: app:deploy/openshift/deployment.yaml
+  - Quote: "envFrom: ... secretRef: ... env: ... valueFrom: secretKeyRef"
+- Policy reference: CKS-10, CKS-11, ASC-06, DCH-07
+- Why it matters: Long-lived credentials and environment variable exposure increase risk of compromise and violate policy.
+- Remediation: Migrate to workload identity federation (IRSA) and mount secrets as file volumes.
 - Confidence: High
 
-#### F-09: Bureau API client disables certificate verification
+#### F-08: External API calls with certificate verification disabled
 - Severity: High
 - Dimension: Security
 - Evidence:
@@ -113,117 +106,138 @@
 - Remediation: Add Atlas CA to trust store and enable certificate verification.
 - Confidence: High
 
-#### F-10: Secrets injected as environment variables
-- Severity: High
-- Dimension: Security
-- Evidence:
-  - Source: app:deploy/openshift/deployment.yaml
-  - Quote: "envFrom: ... secretRef ... env: ... valueFrom: secretKeyRef ... Using envFrom.secretRef or env.valueFrom.secretKeyRef to inject secrets as environment variables is prohibited for new deployments."
-- Policy reference: CKS-11, DCH-07
-- Why it matters: Secrets in environment variables risk disclosure via logs and process listings.
-- Remediation: Mount secrets as file volumes using CSI driver or External Secrets Operator.
-- Confidence: High
-
-#### F-11: Application logs full quote payloads including PII
+#### F-09: Sensitive payloads logged on quote creation failure
 - Severity: Medium
 - Dimension: Security
 - Evidence:
   - Source: app:src/quotecraft/api/quotes.py
-  - Quote: "# Log the full payload so Support can reproduce the failure. (Flagged in the Feb 2026 security spot-check; QC-188 will redact.)"
-- Policy reference: DCH-06, DCH-11
-- Why it matters: Logging PII violates data handling standards and creates audit risk.
-- Remediation: Redact PII from logs and implement field masking.
+  - Quote: "Log the full payload so Support can reproduce the failure. (Flagged in the Feb 2026 security spot-check; QC-188 will redact.)"
+- Policy reference: DCH-06
+- Why it matters: Logging PII and credentials violates data handling standards and risks accidental disclosure.
+- Remediation: Redact sensitive fields from logs on error.
+- Confidence: High
+
+#### F-10: RBAC Role grants wildcard permissions
+- Severity: Medium
+- Dimension: Security
+- Evidence:
+  - Source: app:deploy/openshift/rbac.yaml
+  - Quote: "apiGroups: [\"*\"] resources: [\"*\"] verbs: [\"*\"] ... this Role was copied from an earlier internal tool and never tightened."
+- Policy reference: CKS-14
+- Why it matters: Wildcard permissions violate least privilege and increase risk of privilege escalation.
+- Remediation: Restrict Role permissions to only required resources and verbs.
 - Confidence: High
 
 ### Scalability
 
-#### F-12: In-memory rate limiter not safe for multi-replica scaling
+#### F-11: In-memory rate limiter not safe for multi-replica scaling
 - Severity: High
 - Dimension: Scalability
 - Evidence:
   - Source: app:src/quotecraft/middleware/rate_limit.py
-  - Quote: "Module-level singleton; NOT shared across pods ... horizontal scaling will be addressed in QC-201."
+  - Quote: "Module-level singleton; NOT shared across pods. ... horizontal scaling will be addressed in QC-201."
+  - Source: app:docs/runbook.md
+  - Quote: "known issue with the current in-memory rate limiter when the service is scaled to multiple pods ... workaround: reducing replica count to 1 during partner-test windows."
 - Policy reference: ARS-14
-- Why it matters: Rate limiting is inconsistent across pods, risking quota breaches and false positives at scale.
-- Remediation: Externalise rate limiter state to Redis or another shared store.
+- Why it matters: Rate limiting is inconsistent across pods, risking quota breaches and false positives under scale.
+- Remediation: Externalize rate limiter state (e.g., Redis) for correct enforcement across replicas.
 - Confidence: High
 
-#### F-13: Database connection pool not implemented
-- Severity: High
-- Dimension: Scalability
-- Evidence:
-  - Source: app:src/quotecraft/db.py
-  - Quote: "# TODO(QC-142): migrate to psycopg_pool.ConnectionPool ... For now we open a connection per request; at low baseline traffic this is acceptable, but the capacity plan anticipates 400 req/s at peak which we have not yet stress-tested."
-- Policy reference: ARS-06
-- Why it matters: Opening a new DB connection per request risks exhaustion and degraded performance at peak load.
-- Remediation: Implement a shared connection pool for Postgres.
-- Confidence: High
-
-#### F-14: Redis cache is single-AZ, not multi-AZ
+#### F-12: Worker deployment uses deprecated DeploymentConfig and single replica
 - Severity: Medium
 - Dimension: Scalability
 - Evidence:
-  - Source: app:infra/aws/elasticache.tf
-  - Quote: "Nodes: 1 (single-AZ) ... Multi-AZ ElastiCache replication (QC-177)"
-- Policy reference: ARS-18
-- Why it matters: Single-AZ cache limits resilience and scalability; multi-AZ is required for Silver tier.
-- Remediation: Deploy Redis as a replication group across multiple AZs.
+  - Source: app:deploy/openshift/worker-deploymentconfig.yaml
+  - Quote: "kind: DeploymentConfig ... replicas: 1"
+  - Source: app:docs/architecture.md
+  - Quote: "An async worker handles PDF rendering for the quotation documents. One worker pod runs per zone for resilience."
+- Policy reference: ARS-03, ARS-13
+- Why it matters: Single-replica worker limits throughput and resilience; DeploymentConfig is deprecated.
+- Remediation: Migrate worker to Deployment resource and scale to ≥3 replicas.
+- Confidence: High
+
+#### F-13: Database connection pool not implemented
+- Severity: Low
+- Dimension: Scalability
+- Evidence:
+  - Source: app:src/quotecraft/db.py
+  - Quote: "TODO(QC-142): migrate to psycopg_pool.ConnectionPool ... For now we open a connection per request; at low baseline traffic this is acceptable, but the capacity plan anticipates 400 req/s at peak which we have not yet stress-tested."
+- Policy reference: ARS-06
+- Why it matters: Opening a new connection per request risks exhaustion and degraded performance at peak load.
+- Remediation: Implement connection pooling for Postgres.
 - Confidence: Medium
 
 ### Availability
 
-#### F-15: Application deployment does not meet Silver tier replica and multi-AZ requirements
+#### F-14: Application deployment not multi-AZ, replicas=1
 - Severity: Critical
 - Dimension: Availability
 - Evidence:
   - Source: app:deploy/openshift/deployment.yaml
   - Quote: "replicas: 1 ... nodeSelector: failure-domain.alphapaas.com/zone: \"1\""
-- Policy reference: ARS-02, ARS-05
-- Why it matters: Silver tier requires minimum 3 replicas and multi-AZ distribution; single replica in one AZ risks outage.
-- Remediation: Update deployment to ≥3 replicas with topology spread constraints across AZs.
+- Policy reference: ARS-05, ARS-13
+- Why it matters: Single replica in one AZ violates Silver tier requirements for multi-AZ and minimum 3 replicas.
+- Remediation: Update deployment to ≥3 replicas distributed across AZs using topologySpreadConstraints.
 - Confidence: High
 
-#### F-16: Postgres lacks zone-redundant high availability
+#### F-15: Postgres lacks zone-redundant high availability
 - Severity: High
 - Dimension: Availability
 - Evidence:
   - Source: app:infra/azure/postgres.tf
-  - Quote: "# Zone-redundant HA is not configured ... The HA configuration has not yet been revisited since the initial pilot."
-- Policy reference: ARS-18
-- Why it matters: Single-zone DB is a breach for Silver tier; loss of AZ causes data unavailability.
+  - Quote: "# Zone-redundant HA is not configured. ... has not yet been revisited since the initial pilot."
+  - Source: app:docs/capacity-plan.md
+  - Quote: "High availability: single-zone (see \"Open items\" below)"
+- Policy reference: ARS-18, ASC-04
+- Why it matters: Single-zone database risks total outage on AZ failure, violating Silver tier requirements.
 - Remediation: Enable zone-redundant HA for Azure Postgres.
 - Confidence: High
 
-#### F-17: Disaster recovery exercise not performed
+#### F-16: Redis deployed as single-AZ, single node
 - Severity: High
+- Dimension: Availability
+- Evidence:
+  - Source: app:infra/aws/elasticache.tf
+  - Quote: "num_cache_nodes = 1 ... availability_zone = \"${var.aws_region}a\""
+  - Source: app:docs/capacity-plan.md
+  - Quote: "Nodes: 1 (single-AZ)"
+- Policy reference: ARS-18, ASC-03
+- Why it matters: Single-AZ Redis risks loss of session cache and rate limiter state on AZ failure.
+- Remediation: Deploy Redis as a multi-AZ replication group.
+- Confidence: High
+
+#### F-17: DR exercise not performed
+- Severity: Medium
 - Dimension: Availability
 - Evidence:
   - Source: app:docs/capacity-plan.md
   - Quote: "DR exercise: **not yet performed.** Scheduled for Q3 2026."
 - Policy reference: ARS-20
-- Why it matters: DR exercise is mandatory for Silver tier; lack of testing risks unproven recovery.
-- Remediation: Schedule and execute DR exercise simulating AZ loss; document outcome.
+- Why it matters: Lack of DR testing means recovery procedures are unverified and may fail in a real incident.
+- Remediation: Perform and document DR exercise simulating AZ loss.
 - Confidence: High
 
-#### F-18: Worker uses deprecated DeploymentConfig resource
+#### F-18: Route uses prohibited balancing algorithm and mismatched router label
 - Severity: Medium
 - Dimension: Availability
 - Evidence:
-  - Source: app:deploy/openshift/worker-deploymentconfig.yaml
-  - Quote: "kind: DeploymentConfig ... The legacy DeploymentConfig resource MUST NOT be used for new deployments, and existing usage MUST be migrated at the next major release."
-- Policy reference: ARS-03, ARS-23
-- Why it matters: Deprecated resources risk unsupported behavior and must be migrated.
-- Remediation: Migrate worker to apps/v1 Deployment resource.
+  - Source: app:deploy/openshift/route.yaml
+  - Quote: "router: external ... haproxy.router.openshift.io/balance: source"
+  - Source: case:hackathon-assets/hackathon-quotecraft-intake-form.pdf
+  - Quote: "Exposure Internal only \u2014 intended router label: router=irp"
+- Policy reference: AHS-05, AHS-08
+- Why it matters: Mismatched router label and source balancing risk exposure and uneven traffic distribution.
+- Remediation: Update Route to router=irp and balance=roundrobin or leastconn.
 - Confidence: High
 
 ## Highest Priority Next Actions
 
-1. Disable public access to Azure Postgres and enforce Private Endpoint for all DB traffic (F-06).
-2. Enable TLS for ElastiCache Redis and update application to use rediss:// (F-05).
-3. Restrict RBAC Role permissions to only required resources and verbs (F-07).
-4. Update application deployment to ≥3 replicas with topology spread constraints across AZs (F-15).
-5. Investigate and reduce non-production environment footprint to ≤20% of production (F-01).
+1. Enable TLS for Redis (ElastiCache) and update application to use encrypted connections (rediss://).
+2. Complete DNS setup for Azure Postgres Private Endpoint, disable public network access, and ensure all connections use private FQDN.
+3. Update application deployment to ≥3 replicas distributed across AZs, using topologySpreadConstraints.
+4. Investigate and reduce non-production environment spend to ≤20% of production, adjusting resource sizing and scheduling.
+5. Migrate secrets handling to workload identity federation (IRSA), eliminate long-lived IAM keys, and mount secrets as file volumes.
 
 ---
 
-All findings are grounded in the cited evidence and AlphaPaaS policy clauses. Remediation actions are suitable for backlog tickets and must be prioritized to ensure QuoteCraft meets Silver-tier requirements for Restricted data.
+All findings are grounded in the cited evidence and AlphaPaaS policy clauses. Remediation actions are suitable for backlog tickets and should be prioritized as above.
