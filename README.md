@@ -2,9 +2,10 @@
 
 Local architecture-review agent for the QuoteCraft hackathon.
 
-The current Day 2 version uses LangChain's `create_agent` API with local tools
-for evidence discovery and collection. Azure AI Foundry supplies the OpenAI-
-compatible chat model.
+The current Day 2 version follows the recommended LangChain ReAct-style agent
+approach from the hackathon sessions: a model-backed agent receives a system
+prompt, decides which tools to call, observes the tool results, and then writes
+the final answer. Azure AI Foundry supplies the OpenAI-compatible chat model.
 
 ## Repository Layout
 
@@ -61,7 +62,18 @@ Foundry, for example `gpt-4.1`.
 
 ## Agent Design
 
-The app uses a small LangChain tool-using agent:
+The app uses a small LangChain ReAct-style tool-using agent built with:
+
+```python
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+```
+
+This keeps the hackathon coding pattern aligned with the recommended LangChain
+agent approach while using Azure AI Foundry instead of AWS Bedrock for the model.
+
+The current agent has two tools:
 
 - `list_evidence_sources` lists the application and case-material files
   available for review.
