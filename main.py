@@ -65,11 +65,29 @@ Return exactly this Markdown structure:
 Write 3-5 bullets only. Do not stop here.
 
 ## Findings
-Return 8-12 findings. For each finding, use this exact structure:
+Return 8-12 findings grouped by dimension in this exact order:
 
-### F-01: <short title>
+### Cost
+List Cost findings here, sorted by severity in this order: Critical, High,
+Medium, Low.
+
+### Security
+List Security findings here, sorted by severity in this order: Critical, High,
+Medium, Low.
+
+### Scalability
+List Scalability findings here, sorted by severity in this order: Critical,
+High, Medium, Low.
+
+### Availability
+List Availability findings here, sorted by severity in this order: Critical,
+High, Medium, Low.
+
+For each finding, use this exact structure under the relevant dimension heading:
+
+#### F-01: <short title>
 - Severity: Critical, High, Medium, or Low
-- Dimension: Security, Availability, Scalability, Cost, or Evidence Quality
+- Dimension: Cost, Security, Scalability, or Availability
 - Evidence:
   - Source: <file path or PDF name from the evidence header>
   - Quote: "<short exact quote or very close paraphrase from the evidence>"
@@ -83,6 +101,10 @@ Return the top 5 remediation actions in priority order.
 
 Important rules:
 - Every finding must cite at least one evidence source.
+- Findings must be grouped in this exact dimension order: Cost, Security,
+  Scalability, Availability.
+- Within each dimension, findings must be sorted by this severity order:
+  Critical, High, Medium, Low.
 - Prefer exact policy clause IDs over policy document names.
 - If a finding is based on conflicting documents, include both sources.
 - Do not invent file names, line numbers, clauses, or implementation details.
@@ -200,6 +222,7 @@ def save_pdf_report(report: str, output_dir: Path) -> Path:
     styles = getSampleStyleSheet()
     title_style = styles["Title"]
     heading_style = styles["Heading2"]
+    subheading_style = styles["Heading3"]
     body_style = styles["BodyText"]
     body_style.leading = 14
 
@@ -228,7 +251,12 @@ def save_pdf_report(report: str, output_dir: Path) -> Path:
             continue
         if line.startswith("### "):
             story.append(Spacer(1, 10))
-            story.append(Paragraph(escape(line.removeprefix("### ")), heading_style))
+            story.append(Paragraph(escape(line.removeprefix("### ")), subheading_style))
+            story.append(Spacer(1, 4))
+            continue
+        if line.startswith("#### "):
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(escape(line.removeprefix("#### ")), heading_style))
             story.append(Spacer(1, 4))
             continue
 
