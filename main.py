@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 import textwrap
+from html import escape
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from pypdf import PdfReader
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet
@@ -15,77 +18,44 @@ from rich.console import Console
 
 console = Console()
 
-
-TEXT_FILE_PATTERNS = [
+APP_TEXT_FILE_PATTERNS = [
+    "README.md",
+    "Dockerfile",
+    ".github/workflows/*.yml",
+    ".github/workflows/*.yaml",
     "docs/*.md",
     "docs/*.yaml",
     "deploy/openshift/*.yaml",
     "infra/**/*.tf",
+    "src/**/*.py",
 ]
 
-PDF_FILE_NAMES = [
-    "hackathon-assets/hackathon-quotecraft-intake-form.pdf",
-    "hackathon-assets/AHS_Application_Hosting_Standard.pdf",
-    "hackathon-assets/ARS_Availability_and_Resilience_Standard.pdf",
-    "hackathon-assets/ASC_Approved_Services_Catalog.pdf",
-    "hackathon-assets/CKS_Container_and_Kubernetes_Security_Standard.pdf",
-    "hackathon-assets/DCH_Data_Classification_and_Handling_Standard.pdf",
-    "hackathon-assets/FIN_FinOps_and_Cloud_Cost_Standard.pdf",
+CASE_TEXT_FILE_PATTERNS = [
+    "hackathon_task.md",
+    "hackathon-assets/*.yaml",
+]
+
+CASE_PDF_FILE_PATTERNS = [
+    "hackathon-assets/*.pdf",
 ]
 
 OUTPUT_DIR = Path("outputs")
 MARKDOWN_REPORT_NAME = "review-report.md"
 PDF_REPORT_NAME = "review-report.pdf"
 
-
-def read_text_file(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
-def read_pdf(path: Path) -> str:
-    reader = PdfReader(str(path))
-    pages = []
-    for page_number, page in enumerate(reader.pages, start=1):
-        text = page.extract_text() or ""
-        pages.append(f"--- page {page_number} ---\n{text}")
-    return "\n".join(pages)
-
-
-def collect_evidence(repo_path: Path) -> str:
-    sections: list[str] = []
-
-    for relative_name in PDF_FILE_NAMES:
-        path = repo_path / relative_name
-        if path.exists():
-            sections.append(f"===== {relative_name} =====\n{read_pdf(path)}")
-
-    for pattern in TEXT_FILE_PATTERNS:
-        for path in sorted(repo_path.glob(pattern)):
-            if path.is_file():
-                relative_name = path.relative_to(repo_path).as_posix()
-                sections.append(f"===== {relative_name} =====\n{read_text_file(path)}")
-
-    return "\n\n".join(sections)
-
-
-def build_prompt(evidence: str) -> str:
-    return f"""
+SYSTEM_PROMPT = """
 You are an AlphaInsure architecture review agent.
 
-Your task is to produce a findings report, not a summary.
+You are a LangChain tool-using agent. Before writing the report, call the
+available tools to inspect the evidence inventory and collect the review
+evidence. Produce a findings report, not a summary.
 
-Review QuoteCraft using only the supplied evidence. Do not make generic cloud,
-OpenShift, Kubernetes, or security recommendations unless they are tied to
-specific QuoteCraft evidence and a specific AlphaPaaS policy clause.
+Review QuoteCraft using only evidence returned by the tools. Do not make
+generic cloud, OpenShift, Kubernetes, or security recommendations unless they
+are tied to specific QuoteCraft evidence and a specific AlphaPaaS policy clause.
 
 If evidence is missing or contradictory, report that as a finding and cite the
 conflicting sources.
-
-Find the most important issues across:
-- security
-- availability
-- scalability
-- cost
 
 Return exactly this Markdown structure:
 
@@ -117,10 +87,103 @@ Important rules:
 - If a finding is based on conflicting documents, include both sources.
 - Do not invent file names, line numbers, clauses, or implementation details.
 - Do not include generic best-practice advice.
-
-Evidence:
-{evidence}
 """.strip()
+
+USER_PROMPT = """
+Perform an architecture review of QuoteCraft across security, availability,
+scalability, and cost. Use the available evidence tools first, then write the
+final Markdown report.
+""".strip()
+
+
+def get_app_repo_path() -> Path:
+    return Path(os.getenv("QUOTECRAFT_REPO_PATH", "..\\quotecraft")).resolve()
+
+
+def get_case_materials_path() -> Path:
+    return Path(os.getenv("CASE_MATERIALS_PATH", ".\\case-materials")).resolve()
+
+
+def read_text_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def read_pdf(path: Path) -> str:
+    reader = PdfReader(str(path))
+    pages = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+        pages.append(f"--- page {page_number} ---\n{text}")
+    return "\n".join(pages)
+
+
+def collect_matching_files(root: Path, patterns: list[str]) -> list[Path]:
+    files: list[Path] = []
+    for pattern in patterns:
+        files.extend(path for path in root.glob(pattern) if path.is_file())
+    return sorted(set(files))
+
+
+def format_source_header(source_root: Path, path: Path, source_type: str) -> str:
+    relative_name = path.relative_to(source_root).as_posix()
+    return f"{source_type}:{relative_name}"
+
+
+def build_evidence_inventory(app_repo_path: Path, case_materials_path: Path) -> str:
+    lines = [
+        f"Application repository: {app_repo_path}",
+        f"Case materials: {case_materials_path}",
+        "",
+        "Application evidence files:",
+    ]
+
+    for path in collect_matching_files(app_repo_path, APP_TEXT_FILE_PATTERNS):
+        lines.append(f"- {format_source_header(app_repo_path, path, 'app')}")
+
+    lines.append("")
+    lines.append("Case material text files:")
+    for path in collect_matching_files(case_materials_path, CASE_TEXT_FILE_PATTERNS):
+        lines.append(f"- {format_source_header(case_materials_path, path, 'case')}")
+
+    lines.append("")
+    lines.append("Case material PDF files:")
+    for path in collect_matching_files(case_materials_path, CASE_PDF_FILE_PATTERNS):
+        lines.append(f"- {format_source_header(case_materials_path, path, 'case')}")
+
+    return "\n".join(lines)
+
+
+def collect_review_evidence_text(app_repo_path: Path, case_materials_path: Path) -> str:
+    sections: list[str] = []
+
+    for path in collect_matching_files(case_materials_path, CASE_TEXT_FILE_PATTERNS):
+        source = format_source_header(case_materials_path, path, "case")
+        sections.append(f"===== {source} =====\n{read_text_file(path)}")
+
+    for path in collect_matching_files(case_materials_path, CASE_PDF_FILE_PATTERNS):
+        source = format_source_header(case_materials_path, path, "case")
+        sections.append(f"===== {source} =====\n{read_pdf(path)}")
+
+    for path in collect_matching_files(app_repo_path, APP_TEXT_FILE_PATTERNS):
+        source = format_source_header(app_repo_path, path, "app")
+        sections.append(f"===== {source} =====\n{read_text_file(path)}")
+
+    return "\n\n".join(sections)
+
+
+@tool
+def list_evidence_sources() -> str:
+    """List the QuoteCraft application and case-material files available for review."""
+    return build_evidence_inventory(get_app_repo_path(), get_case_materials_path())
+
+
+@tool
+def collect_review_evidence() -> str:
+    """Collect QuoteCraft policy, intake, documentation, manifest, Terraform, and source evidence."""
+    evidence = collect_review_evidence_text(get_app_repo_path(), get_case_materials_path())
+    if not evidence.strip():
+        return "No evidence was collected. Check QUOTECRAFT_REPO_PATH and CASE_MATERIALS_PATH."
+    return evidence
 
 
 def save_markdown_report(report: str, output_dir: Path) -> Path:
@@ -160,79 +223,94 @@ def save_pdf_report(report: str, output_dir: Path) -> Path:
             continue
         if line.startswith("## "):
             story.append(PageBreak() if line == "## Findings" else Spacer(1, 10))
-            story.append(Paragraph(line.removeprefix("## "), heading_style))
+            story.append(Paragraph(escape(line.removeprefix("## ")), heading_style))
             story.append(Spacer(1, 8))
             continue
         if line.startswith("### "):
             story.append(Spacer(1, 10))
-            story.append(Paragraph(line.removeprefix("### "), heading_style))
+            story.append(Paragraph(escape(line.removeprefix("### ")), heading_style))
             story.append(Spacer(1, 4))
             continue
 
         for wrapped_line in textwrap.wrap(line, width=105) or [""]:
-            story.append(Paragraph(wrapped_line, body_style))
+            story.append(Paragraph(escape(wrapped_line), body_style))
 
     doc.build(story)
     return path
 
 
-def create_model() -> ChatOpenAI | AzureChatOpenAI:
+def create_model() -> ChatOpenAI:
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing required environment variable: AZURE_OPENAI_API_KEY")
-
     base_url = os.getenv("AZURE_OPENAI_BASE_URL")
     model_name = os.getenv("AZURE_OPENAI_MODEL")
-    if base_url:
-        if not model_name:
-            raise RuntimeError(
-                "Missing required environment variable: AZURE_OPENAI_MODEL"
-            )
-        return ChatOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            model=model_name,
-            temperature=0.1,
-            max_tokens=4000,
-        )
 
-    required = [
-        "AZURE_OPENAI_ENDPOINT",
-        "AZURE_OPENAI_DEPLOYMENT",
-        "AZURE_OPENAI_API_VERSION",
+    missing = [
+        name
+        for name, value in [
+            ("AZURE_OPENAI_API_KEY", api_key),
+            ("AZURE_OPENAI_BASE_URL", base_url),
+            ("AZURE_OPENAI_MODEL", model_name),
+        ]
+        if not value
     ]
-    missing = [name for name in required if not os.getenv(name)]
     if missing:
         raise RuntimeError(
             "Missing required environment variables: " + ", ".join(missing)
         )
 
-    return AzureChatOpenAI(
-        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+    return ChatOpenAI(
+        base_url=base_url,
         api_key=api_key,
-        azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT"],
-        api_version=os.environ["AZURE_OPENAI_API_VERSION"],
+        model=model_name,
         temperature=0.1,
         max_tokens=4000,
     )
 
 
+def extract_final_content(agent_response: dict) -> str:
+    messages = agent_response.get("messages", [])
+    if not messages:
+        return str(agent_response)
+
+    final_message = messages[-1]
+    content = getattr(final_message, "content", None)
+    if content is None and isinstance(final_message, dict):
+        content = final_message.get("content")
+
+    if isinstance(content, list):
+        return "\n".join(
+            item.get("text", str(item)) if isinstance(item, dict) else str(item)
+            for item in content
+        )
+
+    return str(content)
+
+
+def validate_paths(app_repo_path: Path, case_materials_path: Path) -> None:
+    if not app_repo_path.exists():
+        raise RuntimeError(f"QuoteCraft repo path does not exist: {app_repo_path}")
+    if not case_materials_path.exists():
+        raise RuntimeError(f"Case materials path does not exist: {case_materials_path}")
+
+
 def main() -> None:
     load_dotenv()
 
-    repo_path = Path(os.getenv("QUOTECRAFT_REPO_PATH", "..\\quotecraft")).resolve()
-    if not repo_path.exists():
-        raise RuntimeError(f"QuoteCraft repo path does not exist: {repo_path}")
+    app_repo_path = get_app_repo_path()
+    case_materials_path = get_case_materials_path()
+    validate_paths(app_repo_path, case_materials_path)
 
-    console.print(f"[bold]Reading evidence from:[/bold] {repo_path}")
-    evidence = collect_evidence(repo_path)
-    if not evidence.strip():
-        raise RuntimeError("No evidence was collected. Check QUOTECRAFT_REPO_PATH.")
+    console.print(f"[bold]Application repository:[/bold] {app_repo_path}")
+    console.print(f"[bold]Case materials:[/bold] {case_materials_path}")
+    console.print("[bold]Running LangChain architecture review agent...[/bold]")
 
-    console.print("[bold]Running architecture review...[/bold]")
-    model = create_model()
-    response = model.invoke(build_prompt(evidence))
-    report = str(response.content)
+    agent = create_agent(
+        model=create_model(),
+        tools=[list_evidence_sources, collect_review_evidence],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    response = agent.invoke({"messages": [{"role": "user", "content": USER_PROMPT}]})
+    report = extract_final_content(response)
 
     console.print("\n[bold]QuoteCraft Architecture Review[/bold]\n")
     console.print(report)
