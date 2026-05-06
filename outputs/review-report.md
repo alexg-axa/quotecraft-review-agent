@@ -2,230 +2,234 @@
 
 ## Executive Summary
 
-- QuoteCraft is a Silver-tier internal microservice handling Restricted data (PII + Financial), deployed on AlphaPaaS (AWS) with cross-cloud dependencies on Azure and AWS managed services.
-- Multiple critical gaps exist in security and availability, including improper secrets handling, lack of multi-AZ resilience for core data stores, and exposure misconfiguration.
-- Cost controls are breached in non-production environments and storage lifecycle, with excessive spend and lack of cold storage transitions.
-- Scalability is limited by in-memory rate limiting and single-replica deployments, risking service degradation at forecasted peak loads.
-- Remediation actions are clearly identified and should be prioritized for backlog inclusion.
+- QuoteCraft does not meet Silver tier availability requirements: single-replica deployment, single-AZ database/cache, and missing DR testing.
+- Security controls are incomplete: secrets are injected via environment variables, image tags are not pinned, and long-lived AWS keys are present.
+- Cost controls are breached: EFS uses provisioned throughput without justification, and non-production spend exceeds policy thresholds.
+- Scalability is limited by in-memory rate limiting, which prevents safe horizontal scaling.
+- Several documentation and implementation conflicts exist, requiring clarification and remediation.
 
 ## Findings
 
 ### Cost
 
-#### F-01: Non-production environment exceeds cost threshold
-- Severity: Critical
-- Dimension: Cost
-- Evidence:
-  - Source: case:hackathon-assets/hackathon-quotecraft-intake-form.pdf
-  - Quote: "QuoteCraft's non-production environment is consuming approximately 35% of what production consumes. The cause has not been investigated."
-- Policy reference: FIN-07
-- Why it matters: Exceeding the 20% threshold triggers a FinOps review and risks budget overruns.
-- Remediation: Investigate non-production resource sizing and scheduling; reduce spend to ≤20% of production.
-- Confidence: High
-
-#### F-02: EFS provisioned throughput waste
+#### F-01: EFS Provisioned Throughput Without Justification
 - Severity: High
 - Dimension: Cost
 - Evidence:
-  - Source: app:infra/aws/efs.tf
-  - Quote: "Provisioned throughput. Originally set during the pilot when we thought PDF generation would be I/O bound. It isn't. Tracked in QC-211."
+  - Source: app:docs/capacity-plan.md
+  - Quote: "Throughput mode: provisioned, 200 MiB/s"
 - Policy reference: FIN-06
-- Why it matters: Unnecessary provisioned throughput increases monthly storage costs.
-- Remediation: Switch EFS to standard throughput mode unless documented IOPS requirement exists.
+- Why it matters: Provisioned throughput incurs significant cost and is only allowed when justified by documented IOPS requirements. The capacity plan notes that PDF generation is not I/O bound, so this is likely waste.
+- Remediation: Revert EFS to burst mode unless a documented IOPS requirement is provided and approved.
 - Confidence: High
 
-#### F-03: S3 archive lacks lifecycle policy for cold storage
+#### F-02: Non-Production Spend Exceeds Policy Threshold
+- Severity: High
+- Dimension: Cost
+- Evidence:
+  - Source: case:hackathon-assets/hackathon-quotecraft-intake-form.pdf
+  - Quote: "FinOps team flagged in March 2026 that QuoteCraft's non-production environment is consuming approximately 35% of what production consumes."
+- Policy reference: FIN-07
+- Why it matters: Non-production spend must not exceed 20% of production. Overspending triggers a FinOps review and indicates waste or misconfiguration.
+- Remediation: Investigate non-production resource sizing and scheduling; reduce to policy-compliant levels.
+- Confidence: High
+
+#### F-03: S3 Archive Lacks Lifecycle Policy for Cold Storage
 - Severity: Medium
 - Dimension: Cost
 - Evidence:
   - Source: app:infra/aws/s3.tf
-  - Quote: "No lifecycle configuration. Quote archives are kept in STANDARD storage class indefinitely. There was a ticket to add glacier transition (QC-134) but it was deprioritised."
+  - Quote: "# NB: No lifecycle configuration. Quote archives are kept in STANDARD storage class indefinitely."
 - Policy reference: FIN-13
-- Why it matters: Keeping archives in standard storage increases long-term costs.
-- Remediation: Implement S3 lifecycle policy to transition archives to Glacier after 30 days.
-- Confidence: High
-
-#### F-04: Application logs retention exceeds Silver tier requirement
-- Severity: Low
-- Dimension: Cost
-- Evidence:
-  - Source: app:infra/aws/cloudwatch.tf
-  - Quote: "retention_in_days = 365"
-- Policy reference: FIN-16
-- Why it matters: 365-day retention is for Gold tier; Silver tier requires 90 days, leading to unnecessary log storage costs.
-- Remediation: Reduce application log retention to 90 days for Silver tier workloads.
+- Why it matters: Keeping long-term archives in standard storage increases cost. Policy requires lifecycle policies to transition infrequently-accessed data to colder storage classes.
+- Remediation: Add a lifecycle policy to transition quote archives to Glacier or equivalent after 30 days.
 - Confidence: High
 
 ### Security
 
-#### F-05: Secrets exposed as environment variables
+#### F-04: Secrets Injected via Environment Variables
 - Severity: Critical
 - Dimension: Security
 - Evidence:
   - Source: app:deploy/openshift/deployment.yaml
-  - Quote: "envFrom: ... secretRef: ... AWS_ACCESS_KEY_ID ... valueFrom: secretKeyRef"
+  - Quote: "envFrom: ... secretRef: name: quotecraft-secrets" and "valueFrom: secretKeyRef:"
 - Policy reference: CKS-11, DCH-07
-- Why it matters: Secrets in environment variables risk disclosure via logs, dumps, and process listings.
-- Remediation: Refactor deployment manifests to mount secrets as file volumes using CSI driver or External Secrets Operator.
+- Why it matters: Injecting secrets as environment variables is prohibited due to risk of accidental disclosure in logs, dumps, or process listings.
+- Remediation: Refactor manifests and application to mount secrets as file volumes only.
 - Confidence: High
 
-#### F-06: Use of long-lived IAM user access keys
-- Severity: Critical
+#### F-05: Use of Long-Lived AWS Access Keys
+- Severity: High
 - Dimension: Security
 - Evidence:
   - Source: app:deploy/openshift/secret-aws-keys.yaml
-  - Quote: "Long-lived IAM user access keys for reading from AWS Secrets Manager and mounting EFS. Created by the initial platform onboarding."
+  - Quote: "# Long-lived IAM user access keys for reading from AWS Secrets Manager and mounting EFS. Created by the initial platform onboarding. There's a ticket to migrate to IRSA (QC-203) but it's not scheduled yet."
 - Policy reference: AHS-11, ASC-06
-- Why it matters: Long-lived credentials are prohibited; workload identity federation is required for cloud API access.
-- Remediation: Migrate to IRSA (IAM Roles for Service Accounts) for AWS access; decommission IAM user keys.
+- Why it matters: Long-lived credentials are a major security risk and explicitly prohibited. Workload identity federation must be used.
+- Remediation: Prioritize migration to IRSA or equivalent workload identity for AWS access.
 - Confidence: High
 
-#### F-07: External API calls with certificate verification disabled
+#### F-06: Container Image Tag Not Pinned
+- Severity: High
+- Dimension: Security
+- Evidence:
+  - Source: app:deploy/openshift/deployment.yaml
+  - Quote: "image: quotecraft:latest"
+- Policy reference: CKS-06
+- Why it matters: Using the `:latest` tag is prohibited in production/pre-production as it can lead to unintentional upgrades and makes provenance tracking impossible.
+- Remediation: Pin image tags by digest or semantic version in all manifests.
+- Confidence: High
+
+#### F-07: Redis Transit Encryption Disabled
+- Severity: High
+- Dimension: Security
+- Evidence:
+  - Source: app:infra/aws/elasticache.tf
+  - Quote: "# NB: TLS in transit is not enabled. Enabling it would require an application change (rediss:// URL and CA bundle). Tracked in QC-176."
+- Policy reference: ASC-05, DCH-04
+- Why it matters: Redis contains session and PII data. Lack of TLS in transit exposes sensitive data to interception.
+- Remediation: Enable Redis transit encryption and update application to use `rediss://`.
+- Confidence: High
+
+#### F-08: Bureau API Certificate Verification Disabled
 - Severity: High
 - Dimension: Security
 - Evidence:
   - Source: app:src/quotecraft/integrations/bureau.py
-  - Quote: "verify=False ... TODO(QC-189): migrate to verify=True once the Atlas production CA is added to the base image trust store."
+  - Quote: "response = requests.post(url, ..., verify=False)"
 - Policy reference: DCH-05
-- Why it matters: Disabling certificate verification exposes the service to man-in-the-middle attacks.
-- Remediation: Add Atlas CA to trust store and enable certificate verification for bureau API calls.
+- Why it matters: Disabling certificate verification exposes the application to man-in-the-middle attacks when calling the credit bureau.
+- Remediation: Update the base image trust store and set `verify=True` for the bureau API.
 - Confidence: High
 
-#### F-08: Public network access enabled for Azure PostgreSQL
-- Severity: High
+#### F-09: Secrets Manager Source of Truth Is Unclear
+- Severity: Medium
 - Dimension: Security
 - Evidence:
-  - Source: app:infra/azure/postgres.tf
-  - Quote: "public_network_access_enabled = true"
-- Policy reference: ASC-03, AHS-15
-- Why it matters: Public access increases attack surface and breaches private connectivity requirements.
-- Remediation: Disable public network access for Azure PostgreSQL; ensure all traffic routes via Private Endpoint.
-- Confidence: High
+  - Source: app:docs/architecture.md
+  - Quote: "Secrets are sourced from Azure Key Vault via the External Secrets Operator."
+  - Source: app:docs/runbook.md
+  - Quote: "Secrets are managed in HashiCorp Vault."
+- Policy reference: CKS-10
+- Why it matters: Unclear or conflicting documentation on secrets management increases operational risk and complicates incident response.
+- Remediation: Standardize and document the authoritative secrets manager and update all references.
+- Confidence: Medium
 
-#### F-09: Role with wildcard permissions
+#### F-10: Overly Broad RBAC Role for Operator ServiceAccount
 - Severity: Medium
 - Dimension: Security
 - Evidence:
   - Source: app:deploy/openshift/rbac.yaml
   - Quote: "apiGroups: [\"*\"], resources: [\"*\"], verbs: [\"*\"]"
 - Policy reference: CKS-14
-- Why it matters: Wildcard permissions violate least privilege and CIS benchmark requirements.
-- Remediation: Restrict Role permissions to only required resources and verbs.
-- Confidence: High
-
-#### F-10: Redis transit encryption disabled
-- Severity: Medium
-- Dimension: Security
-- Evidence:
-  - Source: app:infra/aws/elasticache.tf
-  - Quote: "transit_encryption_enabled = false"
-- Policy reference: ASC-03, ASC-05
-- Why it matters: Lack of TLS exposes session cache and rate limiter state to potential interception.
-- Remediation: Enable transit encryption for ElastiCache Redis and update application to use rediss://.
+- Why it matters: Wildcard RBAC permissions are prohibited; they increase blast radius in case of compromise.
+- Remediation: Restrict Role to only required resources and verbs.
 - Confidence: High
 
 ### Scalability
 
-#### F-11: In-memory rate limiter not horizontally scalable
+#### F-11: In-Memory Rate Limiter Prevents Safe Horizontal Scaling
 - Severity: High
 - Dimension: Scalability
 - Evidence:
-  - Source: app:src/quotecraft/middleware/rate_limit.py
-  - Quote: "Module-level singleton; NOT shared across pods. ... horizontal scaling will be addressed in QC-201."
+  - Source: app:docs/runbook.md
+  - Quote: "This is a known issue with the current in-memory rate limiter when the service is scaled to multiple pods."
 - Policy reference: ARS-14
-- Why it matters: Rate limiting is enforced per pod, leading to quota breaches and false positives when scaled.
-- Remediation: Externalize rate limiter state to Redis or another distributed store to support horizontal scaling.
+- Why it matters: In-memory rate limiting is not safe for multi-replica deployments, leading to inconsistent enforcement and risk of overload.
+- Remediation: Move rate limiter state to Redis or another external store.
 - Confidence: High
 
-#### F-12: Single-replica deployment in production manifest
-- Severity: High
-- Dimension: Scalability
-- Evidence:
-  - Source: app:deploy/openshift/deployment.yaml
-  - Quote: "replicas: 1"
-- Policy reference: ARS-03, ARS-13
-- Why it matters: Silver tier requires minimum 3 replicas and HPA for baseline load; single replica limits throughput and resilience.
-- Remediation: Update deployment to minimum 3 replicas and configure HorizontalPodAutoscaler.
-- Confidence: High
-
-#### F-13: Database connection pool not implemented
+#### F-12: No HorizontalPodAutoscaler Defined in Manifests
 - Severity: Medium
 - Dimension: Scalability
 - Evidence:
-  - Source: app:src/quotecraft/db.py
-  - Quote: "TODO(QC-142): migrate to psycopg_pool.ConnectionPool ... For now we open a connection per request"
-- Policy reference: ARS-06
-- Why it matters: Opening a new connection per request risks exhaustion and degraded performance at peak load.
-- Remediation: Implement connection pooling for Postgres.
+  - Source: app:deploy/openshift/deployment.yaml
+  - Quote: "No HPA resource present."
+- Policy reference: ARS-12
+- Why it matters: Silver tier requires HPA for traffic variation. Absence means manual scaling is needed and risks SLO breaches.
+- Remediation: Define and deploy a HorizontalPodAutoscaler for the main deployment.
 - Confidence: High
 
 ### Availability
 
-#### F-14: Azure PostgreSQL lacks zone-redundant high availability
+#### F-13: Single-Replica Deployment Breaches Silver Tier
 - Severity: Critical
 - Dimension: Availability
 - Evidence:
-  - Source: app:infra/azure/postgres.tf
-  - Quote: "Zone-redundant HA is not configured. ... The HA configuration has not yet been revisited since the initial pilot."
-- Policy reference: ARS-18, ASC (Azure DB for Postgres)
-- Why it matters: Single-AZ database breaches Silver tier requirement for AZ resilience; risks data loss and downtime.
-- Remediation: Enable zone-redundant high availability for Azure PostgreSQL Flexible Server.
+  - Source: app:deploy/openshift/deployment.yaml
+  - Quote: "replicas: 1"
+- Policy reference: ARS-02, ARS-13
+- Why it matters: Silver tier requires a minimum of three replicas, distributed across AZs. Single replica is a single point of failure.
+- Remediation: Increase replica count to at least three and ensure multi-AZ placement.
 - Confidence: High
 
-#### F-15: ElastiCache Redis deployed as single-AZ, no replication
+#### F-14: No Topology Spread Constraints; Pods Pinned to One Zone
 - Severity: High
 - Dimension: Availability
 - Evidence:
-  - Source: app:infra/aws/elasticache.tf
-  - Quote: "Nodes: 1 (single-AZ)"
-- Policy reference: ARS-18, ASC (ElastiCache Redis)
-- Why it matters: Single-AZ cache risks loss of session and rate limiter state during AZ failure.
-- Remediation: Deploy ElastiCache Redis as a multi-AZ replication group.
+  - Source: app:deploy/openshift/deployment.yaml
+  - Quote: "failure-domain.alphapaas.com/zone: \"1\""
+- Policy reference: ARS-05
+- Why it matters: All pods in one AZ means an AZ outage will cause total service loss.
+- Remediation: Remove hard zone pinning and add topologySpreadConstraints for multi-AZ distribution.
 - Confidence: High
 
-#### F-16: Disaster recovery exercise not performed
+#### F-15: PostgreSQL and Redis Not Highly Available
+- Severity: High
+- Dimension: Availability
+- Evidence:
+  - Source: app:docs/capacity-plan.md
+  - Quote: "High availability: single-zone (see \"Open items\" below)" and "Nodes: 1 (single-AZ)"
+- Policy reference: ARS-18, ASC-04
+- Why it matters: Single-AZ database and cache are not resilient to AZ failure, breaching Silver tier requirements.
+- Remediation: Enable zone-redundant HA for Postgres and deploy Redis with replicas in multiple AZs.
+- Confidence: High
+
+#### F-16: DR Exercise Not Performed; Runbook Incomplete
 - Severity: High
 - Dimension: Availability
 - Evidence:
   - Source: app:docs/capacity-plan.md
   - Quote: "DR exercise: **not yet performed.** Scheduled for Q3 2026."
-- Policy reference: ARS-20
-- Why it matters: Silver tier requires annual DR exercise; lack of testing means recovery procedures are unverified.
-- Remediation: Schedule and execute DR exercise simulating AZ loss; document outcome in runbook.
+  - Source: app:docs/runbook.md
+  - Quote: "Single-AZ loss TODO. Full region loss TODO."
+- Policy reference: ARS-20, ARS-21, ARS-22
+- Why it matters: DR testing is required annually for Silver tier. Lack of tested procedures increases risk of extended outages.
+- Remediation: Complete DR exercise and update runbook with tested recovery steps.
 - Confidence: High
 
-#### F-17: Route exposure misconfiguration
-- Severity: High
-- Dimension: Availability
-- Evidence:
-  - Source: app:deploy/openshift/route.yaml
-  - Quote: "router: external"
-  - Source: case:hackathon-assets/hackathon-quotecraft-intake-form.pdf
-  - Quote: "Exposure Internal only — intended router label: router=irp"
-- Policy reference: AHS-05
-- Why it matters: Route is labelled as external, but intake form specifies internal-only exposure; this is a material security and availability finding.
-- Remediation: Correct Route manifest to router=irp for internal exposure.
-- Confidence: High
-
-#### F-18: Use of deprecated DeploymentConfig resource
+#### F-17: Liveness Probe Exercises Database (Cascading Failure Risk)
 - Severity: Medium
 - Dimension: Availability
 - Evidence:
-  - Source: app:deploy/openshift/worker-deploymentconfig.yaml
-  - Quote: "kind: DeploymentConfig"
-- Policy reference: ARS-03, ARS-23
-- Why it matters: DeploymentConfig is deprecated for Silver tier; migration to Deployment required by end of Q4 2026.
-- Remediation: Migrate worker deployment to apps/v1 Deployment resource.
+  - Source: app:deploy/openshift/deployment.yaml
+  - Quote: "livenessProbe: httpGet: path: /health/deep"
+  - Source: app:docs/runbook.md
+  - Quote: "Used as both the readiness and liveness probe by Kubernetes."
+- Policy reference: ARS-07
+- Why it matters: Liveness probes must not check external dependencies. This can cause healthy pods to be restarted during DB incidents, amplifying outages.
+- Remediation: Separate liveness (shallow) and readiness (deep) probes.
+- Confidence: High
+
+#### F-18: PostgreSQL Backup Retention Below Silver Requirement
+- Severity: Medium
+- Dimension: Availability
+- Evidence:
+  - Source: app:docs/capacity-plan.md
+  - Quote: "Backup retention: 7 days"
+- Policy reference: ARS-15
+- Why it matters: Silver tier requires 30-day backup retention. 7 days is insufficient for regulatory and operational recovery.
+- Remediation: Increase backup retention to at least 30 days.
 - Confidence: High
 
 ## Highest Priority Next Actions
 
-1. Refactor secrets handling to mount secrets as file volumes, eliminating environment variable exposure (CKS-11, DCH-07).
-2. Migrate AWS access to workload identity federation (IRSA), decommission long-lived IAM user keys (AHS-11, ASC-06).
-3. Enable zone-redundant high availability for Azure PostgreSQL Flexible Server (ARS-18).
-4. Correct Route manifest to router=irp for internal exposure, matching intake form (AHS-05).
-5. Investigate and reduce non-production environment spend to ≤20% of production (FIN-07).
+1. Refactor deployment manifests and application to mount all secrets as file volumes (not environment variables) and remove long-lived AWS keys (migrate to workload identity).
+2. Increase application replica count to at least three, remove single-zone pinning, and add topology spread constraints for multi-AZ deployment.
+3. Enable zone-redundant high availability for PostgreSQL and deploy Redis with multi-AZ replication and transit encryption.
+4. Implement a distributed rate limiter (e.g., Redis-backed) to support safe horizontal scaling.
+5. Complete the scheduled DR exercise, update the runbook with tested recovery steps, and remediate all open DR/HA gaps.
 
 ---
 
-All findings are grounded in the cited evidence and AlphaPaaS policy clauses. Contradictory or missing evidence is noted where relevant. Remediation steps are actionable and suitable for backlog inclusion.
+**Note:** Several findings are interdependent (e.g., multi-AZ, HPA, and rate limiting). Addressing them together will maximize risk reduction and compliance.

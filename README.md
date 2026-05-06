@@ -2,10 +2,11 @@
 
 Local architecture-review agent for the QuoteCraft hackathon.
 
-The current Day 2 version follows the recommended LangChain ReAct-style agent
-approach from the hackathon sessions: a model-backed agent receives a system
-prompt, decides which tools to call, observes the tool results, and then writes
-the final answer. Azure AI Foundry supplies the OpenAI-compatible chat model.
+The current Day 3 version follows the recommended LangChain ReAct-style agent
+approach from the hackathon sessions and adds evidence strategy: a model-backed
+agent receives a system prompt, decides which tools to call, observes the tool
+results, and then writes the final answer. Azure AI Foundry supplies the
+OpenAI-compatible chat model.
 
 ## Repository Layout
 
@@ -73,14 +74,31 @@ from langchain_openai import ChatOpenAI
 This keeps the hackathon coding pattern aligned with the recommended LangChain
 agent approach while using Azure AI Foundry instead of AWS Bedrock for the model.
 
-The current agent has two tools:
+The current agent has four tools:
 
 - `list_evidence_sources` lists the application and case-material files
   available for review.
+- `build_policy_clause_index` extracts AlphaPaaS policy clause IDs such as
+  `ARS-15`, `CKS-06`, and `FIN-07` from the policy PDFs.
+- `analyze_evidence_precedence` applies the Day 3 evidence precedence model and
+  identifies known contradictions between docs, manifests, runbooks, and plans.
 - `collect_review_evidence` reads the policy PDFs, intake/task materials,
   application docs, manifests, Terraform, and Python source files.
 - The agent uses those tool results to produce a policy-backed Markdown
   findings report.
+
+## Evidence Strategy
+
+Day 3 makes evidence precedence explicit:
+
+1. Intake form = review contract and declared requirements.
+2. AlphaPaaS policies = compliance standard.
+3. Manifests, Terraform, source code, and CI = implementation reality.
+4. Architecture docs, runbooks, and capacity plans = declared intent,
+   operational notes, or planning evidence.
+
+When sources disagree, implementation reality wins for current-state findings,
+and the report should cite the conflict.
 
 ## Run
 

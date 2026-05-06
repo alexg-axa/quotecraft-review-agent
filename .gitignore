@@ -205,7 +205,8 @@ tempCodeRunnerFile.py
 
 # Internal meeting notes and generated outputs
 *_transcript.md
-outputs/
+outputs/review-report-day*.md
+outputs/review-report-day*.pdf
 
 # Ruff stuff:
 .ruff_cache/
