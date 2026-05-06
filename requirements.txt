@@ -6,3 +6,4 @@ pypdf
 pyyaml
 reportlab
 rich
+streamlit

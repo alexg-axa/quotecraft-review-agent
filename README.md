@@ -105,6 +105,10 @@ The Day 3 design choices are intentionally modest and defensible:
 The primary UX is a report-generating CLI. This fits the architecture review
 workflow better than a chatbot because the main output is a findings report.
 
+An optional Streamlit UI is also available for Day 3 demos and less technical
+use. It uses the same agent, tools, prompts, environment variables, and output
+files as the CLI.
+
 ## Run
 
 ```powershell
@@ -137,4 +141,29 @@ What would you like to do?
 1. Full review
 2. List evidence only
 3. Markdown only
+```
+
+## Streamlit UI
+
+Start the optional web UI from the review-agent repository:
+
+```powershell
+streamlit run streamlit_app.py
+```
+
+The UI lets you choose:
+
+- the QuoteCraft application repository path
+- the case-materials folder
+- the output folder
+- whether to generate the PDF report
+
+Use **List Evidence** to create and preview `outputs/evidence-inventory.md`.
+Use **Run Review** to run the full architecture review and save the same report
+files as the CLI:
+
+```text
+outputs/evidence-inventory.md
+outputs/review-report.md
+outputs/review-report.pdf
 ```
