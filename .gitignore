@@ -205,6 +205,7 @@ tempCodeRunnerFile.py
 
 # Internal meeting notes and generated outputs
 *_transcript.md
+outputs/evidence-inventory.md
 outputs/review-report-day*.md
 outputs/review-report-day*.pdf
 
