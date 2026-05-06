@@ -2,10 +2,11 @@
 
 Local architecture-review agent for the QuoteCraft hackathon.
 
-The current Day 2 version follows the recommended LangChain ReAct-style agent
-approach from the hackathon sessions: a model-backed agent receives a system
-prompt, decides which tools to call, observes the tool results, and then writes
-the final answer. Azure AI Foundry supplies the OpenAI-compatible chat model.
+The current Day 3 version keeps the recommended LangChain ReAct-style agent
+approach from the hackathon sessions and improves the user experience around
+it: a model-backed agent receives a system prompt, decides which tools to call,
+observes the tool results, and then writes the final answer. Azure AI Foundry
+supplies the OpenAI-compatible chat model.
 
 ## Repository Layout
 
@@ -82,6 +83,28 @@ The current agent has two tools:
 - The agent uses those tool results to produce a policy-backed Markdown
   findings report.
 
+## Design Decisions
+
+The Day 3 design choices are intentionally modest and defensible:
+
+1. **One agent with tools** — architecture review needs cross-document reasoning,
+   so one coordinator agent is easier to explain than specialist agents per
+   dimension.
+2. **No RAG yet** — the case corpus is small enough for whole-document evidence;
+   RAG can be added later if the corpus outgrows the model context.
+3. **Evidence order** — the agent inventories evidence first, then collects the
+   review evidence before writing the report.
+4. **Conflicting evidence** — the prompt requires conflicts to be cited rather
+   than hidden; implementation evidence should be treated as current reality.
+5. **Citations** — every finding must cite a source and a policy clause.
+6. **Pricing API** — cost findings currently use supplied evidence; a pricing
+   API tool is a future extension once the base report flow is stable.
+
+## User Experience
+
+The primary UX is a report-generating CLI. This fits the architecture review
+workflow better than a chatbot because the main output is a findings report.
+
 ## Run
 
 ```powershell
@@ -89,9 +112,29 @@ python main.py
 ```
 
 The command prints a Markdown architecture-review report to the terminal and
-saves two files:
+saves:
 
 ```text
+outputs/evidence-inventory.md
 outputs/review-report.md
 outputs/review-report.pdf
+```
+
+Useful options:
+
+```powershell
+python main.py --list-evidence
+python main.py --no-pdf
+python main.py --interactive
+python main.py --repo-path ..\quotecraft --case-materials .\case-materials
+python main.py --output-dir outputs\demo-run
+```
+
+Interactive mode asks:
+
+```text
+What would you like to do?
+1. Full review
+2. List evidence only
+3. Markdown only
 ```

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import textwrap
 from html import escape
@@ -42,6 +43,7 @@ CASE_PDF_FILE_PATTERNS = [
 OUTPUT_DIR = Path("outputs")
 MARKDOWN_REPORT_NAME = "review-report.md"
 PDF_REPORT_NAME = "review-report.pdf"
+EVIDENCE_INVENTORY_NAME = "evidence-inventory.md"
 
 SYSTEM_PROMPT = """
 You are an AlphaInsure architecture review agent.
@@ -98,6 +100,14 @@ For each finding, use this exact structure under the relevant dimension heading:
 
 ## Highest Priority Next Actions
 Return the top 5 remediation actions in priority order.
+
+## Report Quality Check
+Return a short checklist with Pass/Fail for:
+- Findings are grouped by Cost, Security, Scalability, Availability.
+- Every finding cites at least one evidence source.
+- Every finding cites at least one policy clause.
+- Findings are specific to QuoteCraft, not generic cloud advice.
+- Recommendations are concrete enough for backlog tickets.
 
 Important rules:
 - Every finding must cite at least one evidence source.
@@ -215,6 +225,13 @@ def save_markdown_report(report: str, output_dir: Path) -> Path:
     return path
 
 
+def save_evidence_inventory(inventory: str, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / EVIDENCE_INVENTORY_NAME
+    path.write_text(inventory, encoding="utf-8")
+    return path
+
+
 def save_pdf_report(report: str, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / PDF_REPORT_NAME
@@ -321,15 +338,94 @@ def validate_paths(app_repo_path: Path, case_materials_path: Path) -> None:
         raise RuntimeError(f"Case materials path does not exist: {case_materials_path}")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the QuoteCraft architecture review agent."
+    )
+    parser.add_argument(
+        "--repo-path",
+        type=Path,
+        default=None,
+        help="Path to the QuoteCraft application repository.",
+    )
+    parser.add_argument(
+        "--case-materials",
+        type=Path,
+        default=None,
+        help="Path to the safe shared hackathon case materials.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help="Directory where reports are written.",
+    )
+    parser.add_argument(
+        "--no-pdf",
+        action="store_true",
+        help="Skip PDF generation and save only Markdown.",
+    )
+    parser.add_argument(
+        "--list-evidence",
+        action="store_true",
+        help="Print and save the evidence inventory without calling the model.",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Ask what to run: full review, evidence inventory only, or Markdown only.",
+    )
+    return parser.parse_args()
+
+
+def apply_interactive_choices(args: argparse.Namespace) -> None:
+    if not args.interactive:
+        return
+
+    console.print("\n[bold]What would you like to do?[/bold]")
+    console.print("1. Full review")
+    console.print("2. List evidence only")
+    console.print("3. Markdown only")
+
+    choice = ""
+    while choice not in {"1", "2", "3"}:
+        choice = input("Select 1, 2, or 3: ").strip()
+
+    if choice == "1":
+        args.list_evidence = False
+        args.no_pdf = False
+    elif choice == "2":
+        args.list_evidence = True
+        args.no_pdf = True
+    elif choice == "3":
+        args.list_evidence = False
+        args.no_pdf = True
+
+
 def main() -> None:
     load_dotenv()
+    args = parse_args()
+    apply_interactive_choices(args)
 
-    app_repo_path = get_app_repo_path()
-    case_materials_path = get_case_materials_path()
+    app_repo_path = (args.repo_path or get_app_repo_path()).resolve()
+    case_materials_path = (args.case_materials or get_case_materials_path()).resolve()
     validate_paths(app_repo_path, case_materials_path)
+    output_dir = args.output_dir.resolve()
 
     console.print(f"[bold]Application repository:[/bold] {app_repo_path}")
     console.print(f"[bold]Case materials:[/bold] {case_materials_path}")
+    console.print(f"[bold]Output directory:[/bold] {output_dir}")
+
+    inventory = build_evidence_inventory(app_repo_path, case_materials_path)
+    inventory_path = save_evidence_inventory(inventory, output_dir)
+    console.print(f"[bold]Evidence inventory saved:[/bold] {inventory_path.resolve()}")
+
+    if args.list_evidence:
+        console.print("\n[bold]Evidence Inventory[/bold]\n")
+        console.print(inventory)
+        console.print("\n[bold]Model call:[/bold] skipped (--list-evidence)")
+        return
+
     console.print("[bold]Running LangChain architecture review agent...[/bold]")
 
     agent = create_agent(
@@ -343,10 +439,13 @@ def main() -> None:
     console.print("\n[bold]QuoteCraft Architecture Review[/bold]\n")
     console.print(report)
 
-    markdown_path = save_markdown_report(report, OUTPUT_DIR)
-    pdf_path = save_pdf_report(report, OUTPUT_DIR)
+    markdown_path = save_markdown_report(report, output_dir)
     console.print(f"\n[bold]Saved Markdown:[/bold] {markdown_path.resolve()}")
-    console.print(f"[bold]Saved PDF:[/bold] {pdf_path.resolve()}")
+    if args.no_pdf:
+        console.print("[bold]Saved PDF:[/bold] skipped (--no-pdf)")
+    else:
+        pdf_path = save_pdf_report(report, output_dir)
+        console.print(f"[bold]Saved PDF:[/bold] {pdf_path.resolve()}")
 
 
 if __name__ == "__main__":
