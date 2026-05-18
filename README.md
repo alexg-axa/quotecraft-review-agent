@@ -40,9 +40,20 @@ notes, credentials, generated reports, or other internal-only material.
 
 ## Setup
 
+## on local Windows computer
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+## in Azure Shell Powershell
+
+```azure shell powershell
+python3 -m venv .venv
+.\.venv\bin\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
